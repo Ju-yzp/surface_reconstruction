@@ -31,6 +31,10 @@ public:
         visibleEntryIds_.reserve(size);
     }
 
+    void processFrame(
+        std::shared_ptr<Scene> scene, std::shared_ptr<View> view,
+        std::shared_ptr<TrackingState> trackingState);
+
 private:
     // 根据深度图像分配内存
     void allocateMemoryFromDepth(
@@ -39,6 +43,10 @@ private:
 
     void integrateIntoScene(
         std::shared_ptr<VoxelBlockHash> vbh, std::shared_ptr<View> view,
+        std::shared_ptr<TrackingState> trackingState);
+
+    void allocateMemoryFromDepth(
+        std::shared_ptr<Scene> scene, std::shared_ptr<View> view,
         std::shared_ptr<TrackingState> trackingState);
 
     // 内存申请请求

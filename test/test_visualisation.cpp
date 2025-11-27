@@ -31,11 +31,7 @@ int main() {
     std::shared_ptr<View> view = std::make_shared<View>(calibrationParams);
     view->depth = getDepth(file1_path);
 
-    // 哈希表
-    std::shared_ptr<VoxelBlockHash> vbh = std::make_shared<VoxelBlockHash>();
-    vbh->mu_ = 0.02f;
-    vbh->max_w_ = 100.0f;
-    vbh->voxelSize_ = 0.05f;
+    SceneParams sceneParams{0.02f, 100.0f, 0.05f};
 
     std::shared_ptr<TrackingState> ts = std::make_shared<TrackingState>();
     {
@@ -48,20 +44,23 @@ int main() {
         ts->pose_d = T;
     }
 
+    std::shared_ptr<Scene> scene = std::make_shared<Scene>(sceneParams);
+    scene->reserveVisibleVoxelBlockList(view->depth.rows * view->depth.cols);
+
     //可视化引擎
     VisualisationEngine ve;
-    ve.reset(view->depth.rows * view->depth.cols);
-    ve.processFrame(vbh, view, ts);
-    // {
-    // Eigen::Vector3f translation(1.3434,0.6271,1.6606);
-    // Eigen::Quaternionf rotation_q( -0.3266,0.6583,0.6112,-0.2938);
-    // rotation_q.normalize();
-    // Eigen::Matrix4f T = Eigen::Matrix4f::Identity();
-    // T.block<3, 3>(0, 0) = rotation_q.toRotationMatrix();
-    // T.block<3, 1>(0, 3) = translation;
-    // ts->pose_d = T;
-    // }
-    // file1_path = "/home/adrewn/surface_restruction/data/1305031102.160407.png";
-    // view->depth = getDepth(file1_path);
-    // ve.processFrame(vbh, view, ts);
+    ve.processFrame(scene, view, ts);
+    scene->swapVisibleList();
+    {
+        Eigen::Vector3f translation(1.3434, 0.6271, 1.6606);
+        Eigen::Quaternionf rotation_q(-0.3266, 0.6583, 0.6112, -0.2938);
+        rotation_q.normalize();
+        Eigen::Matrix4f T = Eigen::Matrix4f::Identity();
+        T.block<3, 3>(0, 0) = rotation_q.toRotationMatrix();
+        T.block<3, 1>(0, 3) = translation;
+        ts->pose_d = T;
+    }
+    file1_path = "/home/adrewn/surface_restruction/data/1305031102.160407.png";
+    view->depth = getDepth(file1_path);
+    ve.processFrame(scene, view, ts);
 }
