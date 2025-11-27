@@ -51,16 +51,16 @@ int main() {
     VisualisationEngine ve;
     ve.processFrame(scene, view, ts);
     scene->swapVisibleList();
-    {
-        Eigen::Vector3f translation(1.3434, 0.6271, 1.6606);
-        Eigen::Quaternionf rotation_q(-0.3266, 0.6583, 0.6112, -0.2938);
-        rotation_q.normalize();
-        Eigen::Matrix4f T = Eigen::Matrix4f::Identity();
-        T.block<3, 3>(0, 0) = rotation_q.toRotationMatrix();
-        T.block<3, 1>(0, 3) = translation;
-        ts->pose_d = T;
-    }
-    file1_path = "/home/adrewn/surface_restruction/data/1305031102.160407.png";
-    view->depth = getDepth(file1_path);
-    ve.processFrame(scene, view, ts);
+    // {
+    //     Eigen::Vector3f translation(1.3434, 0.6271, 1.6606);
+    //     Eigen::Quaternionf rotation_q(-0.3266, 0.6583, 0.6112, -0.2938);
+    //     rotation_q.normalize();
+    //     Eigen::Matrix4f T = Eigen::Matrix4f::Identity();
+    //     T.block<3, 3>(0, 0) = rotation_q.toRotationMatrix();
+    //     T.block<3, 1>(0, 3) = translation;
+    //     ts->pose_d = T;
+    // }
+    // file1_path = "/home/adrewn/surface_restruction/data/1305031102.160407.png";
+    // view->depth = getDepth(file1_path);
+    // ve.processFrame(scene, view, ts);
 }
