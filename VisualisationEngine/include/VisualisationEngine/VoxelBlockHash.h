@@ -1,7 +1,10 @@
 #ifndef VOXELBLOCKHASH_H_
 #define VOXELBLOCKHASH_H_
 
+// eigen
 #include <Eigen/Eigen>
+
+// cpp
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -121,6 +124,14 @@ public:
 
     std::vector<int>& get_currentFrameVisibleVoxelBlockList() {
         return currentFrameVisibleVoxelBlockIdList_;
+    }
+
+    void freeExcessEntry(int id) {
+        if (id - SDF_BUCKET_NUM + 1 >= 0) {
+            freeExcessEntries_.push_back(id);
+            hashEntries_[id].isUsed = false;
+            hashEntries_[id].offset = -1;
+        }
     }
 
 private:

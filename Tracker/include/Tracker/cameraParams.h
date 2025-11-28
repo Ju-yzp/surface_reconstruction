@@ -1,8 +1,10 @@
 #ifndef CAMERA_PARAMS_H_
 #define CAMERA_PARAMS_H_
 
+// opencv
 #include <opencv2/opencv.hpp>
 
+// eigen
 #include <Eigen/Eigen>
 
 struct Intrinsic {

@@ -1,9 +1,14 @@
+// VisualisationEigene
 #include <VisualisationEngine/VisualisationEngine.h>
 
+// eigen
 #include <Eigen/Core>
+
+// cpp
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <memory>
 #include <optional>
 
 void checkVoxelVisibility(
@@ -24,49 +29,17 @@ bool checkVoxelBlockvisibility(
     float factor = voxelSize * SDF_BLOCK_SIZE;
     bool isVisible = false;
 
-    // 0, 0, 0
-    point = blockPos * factor;
-    point(3) = 1.0f;
-    checkVoxelVisibility(isVisible, point, project_m, pose_m, imgSize);
-    if (isVisible) return true;
+    for (int i = 0; i < 8; ++i) {
+        point = blockPos * factor;
+        if (i & 1) point(0) += factor;
+        if (i & 2) point(1) += factor;
+        if (i & 4) point(2) += factor;
 
-    // 0, 0, 1
-    point(2) += factor;
-    checkVoxelVisibility(isVisible, point, project_m, pose_m, imgSize);
-    if (isVisible) return true;
+        point(3) = 1.0f;
 
-    // 0, 1, 1
-    point(1) += factor;
-    checkVoxelVisibility(isVisible, point, project_m, pose_m, imgSize);
-    if (isVisible) return true;
-
-    // 1, 1, 1
-    point(0) += factor;
-    checkVoxelVisibility(isVisible, point, project_m, pose_m, imgSize);
-    if (isVisible) return true;
-
-    // 1, 1, 0
-    point(2) += factor;
-    checkVoxelVisibility(isVisible, point, project_m, pose_m, imgSize);
-    if (isVisible) return true;
-
-    // 1, 0, 0
-    point(1) += factor;
-    checkVoxelVisibility(isVisible, point, project_m, pose_m, imgSize);
-    if (isVisible) return true;
-
-    // 0, 1, 0
-    point(0) -= factor;
-    point(1) += factor;
-    checkVoxelVisibility(isVisible, point, project_m, pose_m, imgSize);
-    if (isVisible) return true;
-
-    // 1, 0, 1
-    point(0) += factor;
-    point(1) -= factor;
-    point(2) += factor;
-    checkVoxelVisibility(isVisible, point, project_m, pose_m, imgSize);
-    if (isVisible) return true;
+        checkVoxelVisibility(isVisible, point, project_m, pose_m, imgSize);
+        if (isVisible) return true;
+    }
     return false;
 }
 
@@ -178,7 +151,9 @@ void VisualisationEngine::allocateMemoryFromDepth(
             direction /= (float)(nstep - 1);
 
             for (int i = 0; i < nstep; ++i) {
-                Eigen::Vector3i blockPos(point_s(0), point_s(1), point_s(2));
+                Eigen::Vector3i blockPos(
+                    (int)std::floor(point_s(0)), (int)std::floor(point_s(1)),
+                    (int)std::floor(point_s(2)));
 
                 int hashId = Scene::getHashIndex(blockPos);
 
@@ -196,6 +171,7 @@ void VisualisationEngine::allocateMemoryFromDepth(
                         hashEntry.pos = blockPos;
                         hashEntry.isUsed = true;
                         scene->set_entry(hashEntry, hashId);
+                        currentFrameVisibleVoxelBlockList.push_back(hashId);
                         isFound = true;
                     } else {  // 在冲突列表上进行分配
                         while (hashEntry.offset >= 0) {
@@ -286,8 +262,8 @@ void VisualisationEngine::integrateIntoScene(
                     // 更新sdf值
                     old_sdf = localVoxelBlock[localId].sdf;
                     old_weight = localVoxelBlock[localId].w_depth;
-
                     new_sdf = std::min(1.0f, eta / mu);
+                    new_weight = 1.0f;
 
                     new_sdf = old_weight * old_sdf + new_weight * new_sdf;
                     new_weight = new_weight + old_weight;
@@ -300,11 +276,128 @@ void VisualisationEngine::integrateIntoScene(
     }
 }
 
-void VisualisationEngine::prepare(
-    std::shared_ptr<Scene> scene, std::shared_ptr<View> view,
-    std::shared_ptr<TrackingState> trackingState, std::shared_ptr<RenderState> renderState) {}
+// 获取点所对应的体素在相对应的体素块中偏移量，同时获取体素块的坐标，用于哈希查找
+int pointToVoxelBlockPos(Eigen::Vector3i& point, Eigen::Vector3i& blockPos) {
+    blockPos(0) = (point(0) < 0 ? point(0) - SDF_BLOCK_SIZE + 1 : point(0)) / SDF_BLOCK_SIZE;
+    blockPos(1) = (point(1) < 0 ? point(1) - SDF_BLOCK_SIZE + 1 : point(1)) / SDF_BLOCK_SIZE;
+    blockPos(2) = (point(2) < 0 ? point(2) - SDF_BLOCK_SIZE + 1 : point(2)) / SDF_BLOCK_SIZE;
 
-void castRay() {}
+    Eigen::Vector3i locPos = point - blockPos * SDF_BLOCK_SIZE;
+    return locPos(0) + locPos(1) * SDF_BLOCK_SIZE + locPos(2) * SDF_BLOCK_SIZE * SDF_BLOCK_SIZE;
+}
+
+Voxel readVoxel(std::shared_ptr<Scene> scene, Eigen::Vector3i point) {
+    Eigen::Vector3i blockPos;
+    int linearId = pointToVoxelBlockPos(point, blockPos);
+
+    int hashId = Scene::getHashIndex(blockPos);
+
+    HashEntry hashEntry;
+    while (true) {
+        hashEntry = scene->get_entry(hashId);
+        if (hashEntry.pos == blockPos && hashEntry.isUsed) {
+            Voxel* voxelBlock = scene->get_voxelBolck(hashId);
+            return voxelBlock[linearId];
+        }
+
+        if (hashEntry.offset < 0) return Voxel();
+
+        hashId = hashEntry.offset;
+    }
+}
+
+Eigen::Vector3i IntToFloor(Eigen::Vector3f& in, Eigen::Vector3f& other) {
+    Eigen::Vector3i tmp = in.array().floor().cast<int>();
+    other = in - tmp.cast<float>();
+    return tmp;
+}
+
+float readFromSDFInterpolated(std::shared_ptr<Scene> scene, Eigen::Vector3f point) {
+    Eigen::Vector3f coeff;
+    Eigen::Vector3i position = IntToFloor(point, coeff);
+
+    float v1, v2, res1, res2;
+    const float cx = coeff(0);
+    const float cy = coeff(1);
+    const float cz = coeff(2);
+
+    v1 = readVoxel(scene, position + Eigen::Vector3i(0, 0, 0)).sdf;
+    v2 = readVoxel(scene, position + Eigen::Vector3i(0, 0, 0)).sdf;
+    res1 = (1.0f - cx) * v1 + cx * v2;
+
+    v1 = readVoxel(scene, position + Eigen::Vector3i(0, 1, 0)).sdf;
+    v2 = readVoxel(scene, position + Eigen::Vector3i(1, 1, 0)).sdf;
+    res1 = (1.0f - cy) * res1 + cy * ((1.0f - cx) * v1 + cx * v2);
+
+    v1 = readVoxel(scene, position + Eigen::Vector3i(0, 0, 1)).sdf;
+    v2 = readVoxel(scene, position + Eigen::Vector3i(1, 0, 1)).sdf;
+    res2 = (1.0f - cx) * v1 + cx * v2;
+
+    v1 = readVoxel(scene, position + Eigen::Vector3i(0, 1, 1)).sdf;
+    v2 = readVoxel(scene, position + Eigen::Vector3i(1, 1, 1)).sdf;
+    res2 = (1.0f - cy) * res2 + cy * ((1.0f - cx) * v1 + cx * v2);
+
+    return (1.0f - cz) * res1 + cz * res2;
+}
+
+float readFromSDFUninterpolated(std::shared_ptr<Scene> scene, Eigen::Vector3f point) {
+    return readVoxel(scene, Eigen::Vector3i(point(0), point(1), point(2))).sdf;
+}
+
+// 三线性插值法
+float readWithConfidenceFromSDFInterpolated(
+    std::shared_ptr<Scene> scene, Eigen::Vector3f point, float& confidence) {
+    Voxel voxel;
+    float res1, res2, v1, v2;
+    float res1_c, res2_c, v1_c, v2_c;
+
+    Eigen::Vector3f coeff;
+    Eigen::Vector3i position = IntToFloor(point, coeff);
+
+    const float cx = coeff(0);
+    const float cy = coeff(1);
+    const float cz = coeff(2);
+
+    voxel = readVoxel(scene, position + Eigen::Vector3i(0, 0, 0));
+    v1 = voxel.sdf;
+    v1_c = voxel.w_depth;
+    voxel = readVoxel(scene, position + Eigen::Vector3i(1, 0, 0));
+    v2 = voxel.sdf;
+    v2_c = voxel.w_depth;
+    res1 = (1.0f - cx) * v1 + cx * v2;
+    res1_c = (1.0f - cx) * v1_c + cx * v2_c;
+
+    voxel = readVoxel(scene, position + Eigen::Vector3i(0, 1, 0));
+    v1 = voxel.sdf;
+    v1_c = voxel.w_depth;
+    voxel = readVoxel(scene, position + Eigen::Vector3i(1, 1, 0));
+    v2 = voxel.sdf;
+    v2_c = voxel.w_depth;
+    res1 = (1.0f - cy) * res1 + cy * ((1.0f - cx) * v1 + cx * v2);
+    res1_c = (1.0f - cy) * res1_c + cy * ((1.0f - cx) * v1_c + cx * v2_c);
+
+    voxel = readVoxel(scene, position + Eigen::Vector3i(0, 0, 1));
+    v1 = voxel.sdf;
+    v1_c = voxel.w_depth;
+    voxel = readVoxel(scene, position + Eigen::Vector3i(1, 0, 1));
+    v2 = voxel.sdf;
+    v2_c = voxel.w_depth;
+    res2 = (1.0f - cx) * v1 + cx * v2;
+    res2_c = (1.0f - cx) * v1_c + cx * v2_c;
+
+    voxel = readVoxel(scene, position + Eigen::Vector3i(0, 1, 1));
+    v1 = voxel.sdf;
+    v1_c = voxel.w_depth;
+    voxel = readVoxel(scene, position + Eigen::Vector3i(1, 1, 1));
+    v2 = voxel.sdf;
+    v2_c = voxel.w_depth;
+    res2 = (1.0f - cy) * res2 + cy * ((1.0f - cx) * v1 + cx * v2);
+    res2_c = (1.0f - cy) * res2_c + cy * ((1.0f - cx) * v1_c + cx * v2_c);
+
+    confidence = (1.0f - cz) * res1_c + cz * res2_c;
+
+    return (1.0f - cz) * res1 + cz * res2;
+}
 
 void VisualisationEngine::raycast(
     std::shared_ptr<Scene> scene, std::shared_ptr<View> view,
@@ -329,6 +422,13 @@ void VisualisationEngine::raycast(
 
     float oneOverVoxelSize = 1.0f / scene->get_sceneParams().voxelSize;
 
+    float stepScale = scene->get_sceneParams().mu * scene->get_sceneParams().voxelSize;
+
+    float stepLen;
+
+    cv::Vec4f* data = (cv::Vec4f*)renderState->raycastResult.data;
+
+#pragma omp parallel for
     for (int y = 0; y < rows; ++y) {
         for (int x = 0; x < cols; ++x) {
             Eigen::Vector3f pointImage(x, y, 1.0f);
@@ -340,7 +440,7 @@ void VisualisationEngine::raycast(
 
             Eigen::Vector3f pointS = temp * viewFrustum_min;
             Eigen::Vector3f point_s =
-                (inv_m * (Eigen::Vector4f() << pointE, 1.0f).finished()).head(3) * oneOverVoxelSize;
+                (inv_m * (Eigen::Vector4f() << pointS, 1.0f).finished()).head(3) * oneOverVoxelSize;
 
             totalLenght = pointS.norm() * oneOverVoxelSize;
             totalLenghtMax = pointE.norm() * oneOverVoxelSize;
@@ -350,8 +450,154 @@ void VisualisationEngine::raycast(
 
             Eigen::Vector3f pt_result = point_s;
 
+            float sdf_v;
+
+            bool pointFound{false};
+
+            float confidence;
+
             while (totalLenght < totalLenghtMax) {
+                sdf_v = readFromSDFUninterpolated(scene, pt_result);
+                if (sdf_v < 0.1f && sdf_v > -0.5f)
+                    sdf_v = readFromSDFInterpolated(scene, pt_result);
+                if (sdf_v < 0.0f) break;
+                stepLen = std::max(sdf_v * stepScale, 1.0f);
+
+                pt_result += stepLen * rayDirection;
+                totalLenght += stepLen;
+            }
+
+            if (sdf_v < 0.0f) {
+                stepLen = sdf_v * stepScale;
+                pt_result += stepLen * rayDirection;
+
+                sdf_v = readWithConfidenceFromSDFInterpolated(scene, pt_result, confidence);
+
+                stepLen = sdf_v * stepScale;
+                pt_result += stepLen * rayDirection;
+                pointFound = true;
+            }
+
+            data[x + y * cols] = cv::Vec4f(
+                pt_result(0), pt_result(1), pt_result(2), pointFound ? confidence + 1.0f : 0.0f);
+        }
+    }
+}
+
+bool computeNormalAndAngle(
+    bool smoothing, bool flipNormals, Eigen::Vector3f lightSource, cv::Vec2i point, float voxelSize,
+    cv::Vec4f* pointRay, cv::Size2i imgSize, cv::Vec3f& output_normmal, float& angle) {
+    cv::Vec4f rayPoints[4];
+    if (smoothing) {
+        if (point(0) <= 2 || point(1) >= imgSize.height - 3 || point(1) <= 2 ||
+            point(0) >= imgSize.width - 3)
+            return false;
+
+        rayPoints[0] = pointRay[(point(0) + 2) + point(1) * imgSize.width];
+        rayPoints[1] = pointRay[point(0) + (point(1) + 2) * imgSize.width];
+        rayPoints[2] = pointRay[(point(0) - 2) + point(1) * imgSize.width];
+        rayPoints[3] = pointRay[point(0) + (point(1) - 2) * imgSize.width];
+    } else {
+        if (point(0) <= 1 || point(1) >= imgSize.height - 2 || point(1) <= 1 ||
+            point(0) >= imgSize.width - 2)
+            return false;
+
+        rayPoints[0] = pointRay[(point(0) + 1) + point(1) * imgSize.width];
+        rayPoints[1] = pointRay[point(0) + (point(1) + 1) * imgSize.width];
+        rayPoints[2] = pointRay[(point(0) - 1) + point(1) * imgSize.width];
+        rayPoints[3] = pointRay[point(0) + (point(1) - 1) * imgSize.width];
+    }
+
+    cv::Vec4f diff_x, diff_y;
+
+    bool doPuls{false};
+    if (rayPoints[0](3) < 0.0f || rayPoints[1](3) < 0.0f || rayPoints[2](3) < 0.0f ||
+        rayPoints[3](3) < 0.0f)
+        doPuls = true;
+
+    else {
+        diff_x = rayPoints[0] - rayPoints[2];
+        diff_y = rayPoints[1] - rayPoints[3];
+
+        float diff = std::max(
+            Eigen::Vector4f(diff_x(0), diff_x(1), diff_x(2), diff_x(3)).norm(),
+            Eigen::Vector4f(diff_y(0), diff_y(1), diff_y(2), diff_y(3)).norm());
+
+        if ((diff * voxelSize * voxelSize) > (std::pow(0.15f, 2))) doPuls = true;
+    }
+
+    if (doPuls) {
+        if (smoothing) {
+            rayPoints[0] = pointRay[(point(0) + 1) + point(1) * imgSize.width];
+            rayPoints[1] = pointRay[point(0) + (point(1) + 1) * imgSize.width];
+            rayPoints[2] = pointRay[(point(0) - 1) + point(1) * imgSize.width];
+            rayPoints[3] = pointRay[point(0) + (point(1) - 1) * imgSize.width];
+
+            diff_x = rayPoints[0] - rayPoints[2];
+            diff_y = rayPoints[1] - rayPoints[3];
+            if (rayPoints[0](3) < 0.0f || rayPoints[1](3) < 0.0f || rayPoints[2](3) < 0.0f ||
+                rayPoints[3](3) < 0.0f)
+                return false;
+        }
+    }
+
+    output_normmal(0) = -(diff_x(1) * diff_y(2) - diff_x(2) * diff_y(1));
+    output_normmal(1) = -(diff_x(2) * diff_y(0) - diff_x(0) * diff_y(2));
+    output_normmal(2) = -(diff_x(0) * diff_y(1) - diff_x(1) * diff_y(0));
+
+    if (flipNormals) output_normmal *= -1.0f;
+    Eigen::Vector3f temp(output_normmal[0], output_normmal[1], output_normmal[2]);
+    output_normmal *= (1.0f / temp.norm());
+
+    angle = temp.transpose() * lightSource;
+    if (!(angle > 0.0)) return false;
+    return true;
+}
+
+void VisualisationEngine::produceNeedICP(
+    Eigen::Vector3f lightSource, float voxelSize, std::shared_ptr<RenderState> renderState,
+    std::shared_ptr<TrackingState> trackingState) {
+    int rows = trackingState->pointsMap.rows;
+    int cols = trackingState->pointsMap.cols;
+
+    cv::Vec4f* point = (cv::Vec4f*)trackingState->pointsMap.data;
+    cv::Vec4f* normal = (cv::Vec4f*)trackingState->normalMap.data;
+    cv::Vec4f* rayPoint = (cv::Vec4f*)renderState->raycastResult.data;
+
+    cv::Size2i imgSize(cols, rows);
+
+    cv::Vec3f output_normmal;
+#pragma omp parallel for
+    for (int y = 0; y < rows; ++y) {
+        int offset = y * cols;
+        for (int x = 0; x < cols; ++x) {
+            float angle;
+            bool found = computeNormalAndAngle(
+                renderState->smoothing, renderState->flipNormals, lightSource, cv::Vec2i(x, y),
+                voxelSize, rayPoint, imgSize, output_normmal, angle);
+
+            int id = x + offset;
+            if (found) {
+                point[id] = rayPoint[id] * voxelSize;
+                point[id](3) = 0.0f;
+                normal[id] =
+                    cv::Vec4f{output_normmal(0), output_normmal(1), output_normmal(2), 0.0f};
+            } else {
+                cv::Vec4f output;
+                output(3) = -1.0f;
+                point[id] = output;
+                normal[id] = output;
             }
         }
     }
+}
+
+void VisualisationEngine::prepare(
+    std::shared_ptr<Scene> scene, std::shared_ptr<View> view,
+    std::shared_ptr<TrackingState> trackingState, std::shared_ptr<RenderState> renderState) {
+    raycast(scene, view, trackingState, renderState);
+
+    Eigen::Vector3f lightSource = trackingState->pose_d.inverse().col(2).head(3);
+
+    produceNeedICP(lightSource, scene->get_sceneParams().voxelSize, renderState, trackingState);
 }
