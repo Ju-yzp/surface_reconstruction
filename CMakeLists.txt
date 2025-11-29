@@ -18,6 +18,9 @@ find_package(OpenCV REQUIRED)
 find_package(g2o REQUIRED)
 find_package(Sophus REQUIRED)
 find_package(OpenMP REQUIRED)
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 # set(OrbbecSDK_DIR "/home/adrewn/OrbbecSDK") find_package(OrbbecSDK REQUIRED)
 
@@ -37,11 +40,16 @@ target_include_directories(
   test_visualisation
   PUBLIC ${PROJECT_SOURCE_DIR}/Tracker/include
          ${PROJECT_SOURCE_DIR}/VisualisationEngine/include
-         ${Eigen3_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS} ${G2O_INCLUDE_DIRS})
+         ${Eigen3_INCLUDE_DIRS}
+         ${OpenCV_INCLUDE_DIRS}
+         ${G2O_INCLUDE_DIRS}
+         ${rclcpp_INCLUDE_DIRS}
+         ${visualization_msgs_INCLUDE_DIRS})
 
 target_link_libraries(
-  test_visualisation PUBLIC ${OpenCV_LIBS} ${G2O_LIBRARIES} Sophus::Sophus
-                            VisualisationEngine)
+  test_visualisation
+  PUBLIC ${OpenCV_LIBS} ${G2O_LIBRARIES} Sophus::Sophus rclcpp::rclcpp
+         ${visualization_msgs_LIBRARIES} VisualisationEngine)
 
 # add_executable(compute_pointcloud test/compute_pointcloud.cpp)
 # target_include_directories( compute_pointcloud PUBLIC

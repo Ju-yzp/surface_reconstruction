@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <optional>
+#include <set>
 
 // 一个体素块边长/一个体素边长
 constexpr int SDF_BLOCK_SIZE = 8;
@@ -37,8 +38,8 @@ struct HashEntry {
 
 // 体素
 struct Voxel {
-    short sdf;
-    u_char w_depth;
+    float sdf = 1.0f;
+    float w_depth = 0;
 };
 
 struct SceneParams {
@@ -70,11 +71,11 @@ public:
         delete[] hashEntries_;
     }
 
-    // 预分配可视体素块列表内存
-    void reserveVisibleVoxelBlockList(int size) {
-        lastFrametVisibleVoxelBlockList_.reserve(size);
-        currentFrameVisibleVoxelBlockIdList_.reserve(size);
-    }
+    // // 预分配可视体素块列表内存
+    // void reserveVisibleVoxelBlockList(int size) {
+    //     lastFrametVisibleVoxelBlockList_.reserve(size);
+    //     currentFrameVisibleVoxelBlockIdList_.reserve(size);
+    // }
 
     // 哈希表索引函数
     static int getHashIndex(Eigen::Vector3i voxelBlockPos) {
@@ -86,7 +87,7 @@ public:
     // 获取体素块地址
     Voxel* get_voxelBolck(int id) { return voxel_ + id * SDF_BLOCK_SIZE3; }
 
-    // 清除上一帧的可视体素块索引并交换上一帧和当前帧的数据指针以及其他数据
+    // 清除上一帧的可见体素块索引并交换上一帧和当前帧的数据指针以及其他数据
     void swapVisibleList() {
         lastFrametVisibleVoxelBlockList_.clear();
         lastFrametVisibleVoxelBlockList_.swap(currentFrameVisibleVoxelBlockIdList_);
@@ -110,19 +111,17 @@ public:
 
     SceneParams get_sceneParams() const { return sceneParams_; }
 
-    const std::vector<int>& get_constLastFrameVisibleVoxelBlockList() const {
+    const std::set<int>& get_constLastFrameVisibleVoxelBlockList() const {
         return lastFrametVisibleVoxelBlockList_;
     }
 
-    std::vector<int>& get_lastFrameVisibleVoxelBlockList() {
-        return lastFrametVisibleVoxelBlockList_;
-    }
+    std::set<int>& get_lastFrameVisibleVoxelBlockList() { return lastFrametVisibleVoxelBlockList_; }
 
-    const std::vector<int>& get_constCurrentFrameVisibleVoxelBlockList() const {
+    const std::set<int>& get_constCurrentFrameVisibleVoxelBlockList() const {
         return currentFrameVisibleVoxelBlockIdList_;
     }
 
-    std::vector<int>& get_currentFrameVisibleVoxelBlockList() {
+    std::set<int>& get_currentFrameVisibleVoxelBlockList() {
         return currentFrameVisibleVoxelBlockIdList_;
     }
 
@@ -134,6 +133,11 @@ public:
         }
     }
 
+    void resetEntry(int id) {
+        hashEntries_[id].isUsed = false;
+        hashEntries_[id].offset = -1;
+    }
+
 private:
     Voxel* voxel_{nullptr};
 
@@ -143,8 +147,8 @@ private:
 
     SceneParams sceneParams_;
 
-    std::vector<int> lastFrametVisibleVoxelBlockList_;
+    std::set<int> lastFrametVisibleVoxelBlockList_;
 
-    std::vector<int> currentFrameVisibleVoxelBlockIdList_;
+    std::set<int> currentFrameVisibleVoxelBlockIdList_;
 };
 #endif

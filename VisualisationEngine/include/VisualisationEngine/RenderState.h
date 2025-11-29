@@ -11,7 +11,7 @@ struct RenderState {
     }
     cv::Mat raycastResult;
 
-    bool smoothing{false};
+    bool smoothing{true};
 
     bool flipNormals{false};
 };

@@ -19,7 +19,9 @@ void checkVoxelVisibility(
     Eigen::Vector3f pointImage = project_m * pt.head(3);
     pointImage /= pointImage(2);
 
-    if (pt(0) >= 0 && pt(0) < imgSize(0) && pt(1) >= 0 && pt(1) < imgSize(1)) isVisible = true;
+    if (pointImage(0) >= 0 && pointImage(0) < imgSize(0) && pointImage(1) >= 0 &&
+        pointImage(1) < imgSize(1))
+        isVisible = true;
 }
 
 bool checkVoxelBlockvisibility(
@@ -36,7 +38,7 @@ bool checkVoxelBlockvisibility(
         if (i & 4) point(2) += factor;
 
         point(3) = 1.0f;
-
+        isVisible = false;
         checkVoxelVisibility(isVisible, point, project_m, pose_m, imgSize);
         if (isVisible) return true;
     }
@@ -52,20 +54,16 @@ void VisualisationEngine::processFrame(
             我们或许该引进删除重复的元素，避免后续重复操作，同时如果跟踪的比较好，就说明笛卡尔系运动速度较慢，
             同时在李代姿态下变化也比较小
     */
-    std::vector<int>& lastFrametVisibleVoxelBlockList = scene->get_lastFrameVisibleVoxelBlockList();
-    std::vector<int>& currentFrameVisibleVoxelBlockIdList =
+    std::set<int>& lastFrametVisibleVoxelBlockList = scene->get_lastFrameVisibleVoxelBlockList();
+    std::set<int>& currentFrameVisibleVoxelBlockIdList =
         scene->get_currentFrameVisibleVoxelBlockList();
 
-    std::sort(lastFrametVisibleVoxelBlockList.begin(), lastFrametVisibleVoxelBlockList.end());
-    std::sort(
-        currentFrameVisibleVoxelBlockIdList.begin(), currentFrameVisibleVoxelBlockIdList.end());
-
-    std::vector<int> result;
+    std::set<int> result;
 
     std::set_difference(
         lastFrametVisibleVoxelBlockList.begin(), lastFrametVisibleVoxelBlockList.end(),
         currentFrameVisibleVoxelBlockIdList.begin(), currentFrameVisibleVoxelBlockIdList.end(),
-        std::back_inserter(result));
+        std::inserter(result, result.begin()));
 
     Eigen::Matrix3f project_m = view->calibrationParams.depth.k;
     Eigen::Matrix4f pose_m = trackingState->pose_d;
@@ -77,7 +75,7 @@ void VisualisationEngine::processFrame(
         Eigen::Vector4f p;
         p << hashEntry.pos(0), hashEntry.pos(1), hashEntry.pos(2), 1.0f;
         if (checkVoxelBlockvisibility(p, project_m, pose_m, imageSize, voxelSize))
-            currentFrameVisibleVoxelBlockIdList.push_back(entryId);
+            currentFrameVisibleVoxelBlockIdList.emplace(entryId);
     }
 
     integrateIntoScene(scene, view, trackingState);
@@ -114,7 +112,7 @@ void VisualisationEngine::allocateMemoryFromDepth(
     float* depth = (float*)view->depth.data;
 
     // 当前帧可视化哈希表entry列表
-    std::vector<int>& currentFrameVisibleVoxelBlockList =
+    std::set<int>& currentFrameVisibleVoxelBlockList =
         scene->get_currentFrameVisibleVoxelBlockList();
 
     // 遍历深度图像
@@ -123,10 +121,10 @@ void VisualisationEngine::allocateMemoryFromDepth(
         for (int x = 0; x < cols; ++x) {
             depth_measure = depth[offset + x];
             if (depth_measure < 1e-4 || (depth_measure - mu) < viewFrustum_min ||
-                (depth_measure - mu) < viewFrustum_min || (depth_measure + mu) > viewFrustum_max)
+                (depth_measure + mu) > viewFrustum_max)
                 continue;
 
-            // 获取在depth下的点云数据
+            // 获取在depth相机下的点云数据
             point_in_camera(2) = 1.0f;
             point_in_camera(0) = x;
             point_in_camera(1) = y;
@@ -162,25 +160,23 @@ void VisualisationEngine::allocateMemoryFromDepth(
                 HashEntry hashEntry = scene->get_entry(hashId);
 
                 if (hashEntry.pos == blockPos && hashEntry.isUsed) {
-                    currentFrameVisibleVoxelBlockList.push_back(hashId);
+                    currentFrameVisibleVoxelBlockList.emplace(hashId);
                     isFound = true;
-                }
-
-                if (!isFound) {
-                    if (!hashEntry.isUsed) {  // 在哈希表上进行分配
-                        hashEntry.pos = blockPos;
-                        hashEntry.isUsed = true;
-                        scene->set_entry(hashEntry, hashId);
-                        currentFrameVisibleVoxelBlockList.push_back(hashId);
-                        isFound = true;
-                    } else {  // 在冲突列表上进行分配
-                        while (hashEntry.offset >= 0) {
-                            hashEntry = scene->get_entry(hashEntry.offset);
-                            if (hashEntry.pos == blockPos && hashEntry.isUsed) {
-                                currentFrameVisibleVoxelBlockList.push_back(hashEntry.ptr);
-                                isFound = true;
-                                break;
-                            }
+                } else if (!hashEntry.isUsed) {  // 在哈希表上进行分配
+                    hashEntry.pos = blockPos;
+                    hashEntry.isUsed = true;
+                    scene->set_entry(hashEntry, hashId);
+                    currentFrameVisibleVoxelBlockList.emplace(hashId);
+                    isFound = true;
+                } else {  // 在冲突列表上进行分配
+                    int currentEntryId = hashId;
+                    while (scene->get_entry(currentEntryId).offset > -1) {
+                        currentEntryId = scene->get_entry(currentEntryId).offset;
+                        HashEntry currentHashEntry = scene->get_entry(currentEntryId);
+                        if (currentHashEntry.pos == blockPos && currentHashEntry.isUsed) {
+                            currentFrameVisibleVoxelBlockList.emplace(currentEntryId);
+                            isFound = true;
+                            break;
                         }
                     }
 
@@ -189,8 +185,8 @@ void VisualisationEngine::allocateMemoryFromDepth(
                         if (!childHashEntry.has_value()) continue;
                         childHashEntry.value()->pos = blockPos;
                         childHashEntry.value()->isUsed = true;
-                        scene->set_entryOffset(hashEntry.ptr, childHashEntry.value()->ptr);
-                        currentFrameVisibleVoxelBlockList.push_back(childHashEntry.value()->ptr);
+                        scene->set_entryOffset(currentEntryId, childHashEntry.value()->ptr);
+                        currentFrameVisibleVoxelBlockList.emplace(childHashEntry.value()->ptr);
                     }
                 }
 
@@ -205,7 +201,7 @@ void VisualisationEngine::integrateIntoScene(
     std::shared_ptr<TrackingState> trackingState) {
     float* depth = (float*)view->depth.data;
 
-    const std::vector<int>& currentFrameVisibleVoxelBlockIdList =
+    const std::set<int>& currentFrameVisibleVoxelBlockIdList =
         scene->get_constCurrentFrameVisibleVoxelBlockList();
 
     Eigen::Matrix3f k = view->calibrationParams.rgb.k;
@@ -222,10 +218,14 @@ void VisualisationEngine::integrateIntoScene(
 
     Eigen::Matrix4f pose = trackingState->pose_d;
 
+    std::vector<int> entryIds;
+    for (std::set<int>::iterator it = currentFrameVisibleVoxelBlockIdList.begin();
+         it != currentFrameVisibleVoxelBlockIdList.end(); ++it)
+        entryIds.push_back(*it);
 #pragma omp parallel for
-    for (int i = 0; i < currentFrameVisibleVoxelBlockIdList.size(); ++i) {
-        Voxel* localVoxelBlock = scene->get_voxelBolck(currentFrameVisibleVoxelBlockIdList[i]);
-        HashEntry currentHashEntry = scene->get_entry(currentFrameVisibleVoxelBlockIdList[i]);
+    for (int i = 0; i < entryIds.size(); ++i) {
+        HashEntry currentHashEntry = scene->get_entry(entryIds[i]);
+        Voxel* localVoxelBlock = scene->get_voxelBolck(currentHashEntry.ptr);
 
         Eigen::Vector3i globalPos = currentHashEntry.pos;
         globalPos *= SDF_BLOCK_SIZE;
@@ -235,7 +235,7 @@ void VisualisationEngine::integrateIntoScene(
                 for (int x = 0; x < SDF_BLOCK_SIZE; ++x) {
                     int localId = x + y * SDF_BLOCK_SIZE + z * SDF_BLOCK_SIZE * SDF_BLOCK_SIZE;
 
-                    // 计算世界坐标系下的位置，需要从体素的表达方式进行计算
+                    // 计算世界坐标系下的位置，需要从体素块的表达方式进行计算,转换至笛卡尔坐标系
                     Eigen::Vector4f point_in_world;
                     point_in_world(0) = (globalPos(0) + x) * voxelSize;
                     point_in_world(1) = (globalPos(1) + y) * voxelSize;
@@ -255,19 +255,25 @@ void VisualisationEngine::integrateIntoScene(
                         pointImage(1) > rows - 2)
                         continue;
 
-                    depth_measure = depth[(int)(pointImage(0) + pointImage(1) * cols)];
+                    depth_measure =
+                        depth[((int)(pointImage(0) + 0.5) + (int)(pointImage(1) + 0.5) * cols)];
+                    if (depth_measure < 1e-6) continue;
                     eta = depth_measure - point_in_camera(2);
 
+                    // 不在截断区域内,跳过不更新
                     if (eta < -mu) continue;
+
                     // 更新sdf值
                     old_sdf = localVoxelBlock[localId].sdf;
                     old_weight = localVoxelBlock[localId].w_depth;
+                    if (old_weight == max_weight) continue;
                     new_sdf = std::min(1.0f, eta / mu);
                     new_weight = 1.0f;
 
                     new_sdf = old_weight * old_sdf + new_weight * new_sdf;
                     new_weight = new_weight + old_weight;
                     new_sdf /= new_weight;
+
                     new_weight = std::min(new_weight, max_weight);
 
                     localVoxelBlock[localId].sdf = new_sdf;
@@ -293,14 +299,15 @@ Voxel readVoxel(std::shared_ptr<Scene> scene, Eigen::Vector3i point) {
     int hashId = Scene::getHashIndex(blockPos);
 
     HashEntry hashEntry;
+
     while (true) {
         hashEntry = scene->get_entry(hashId);
         if (hashEntry.pos == blockPos && hashEntry.isUsed) {
-            Voxel* voxelBlock = scene->get_voxelBolck(hashId);
+            Voxel* voxelBlock = scene->get_voxelBolck(hashEntry.ptr);
             return voxelBlock[linearId];
         }
 
-        if (hashEntry.offset < 0) return Voxel();
+        if (hashEntry.offset < 0) return Voxel{1.0f, 0.0f};
 
         hashId = hashEntry.offset;
     }
@@ -341,7 +348,7 @@ float readFromSDFInterpolated(std::shared_ptr<Scene> scene, Eigen::Vector3f poin
 }
 
 float readFromSDFUninterpolated(std::shared_ptr<Scene> scene, Eigen::Vector3f point) {
-    return readVoxel(scene, Eigen::Vector3i(point(0), point(1), point(2))).sdf;
+    return readVoxel(scene, Eigen::Vector3i(point.array().floor().cast<int>())).sdf;
 }
 
 // 三线性插值法
@@ -422,7 +429,7 @@ void VisualisationEngine::raycast(
 
     float oneOverVoxelSize = 1.0f / scene->get_sceneParams().voxelSize;
 
-    float stepScale = scene->get_sceneParams().mu * scene->get_sceneParams().voxelSize;
+    float stepScale = scene->get_sceneParams().mu * oneOverVoxelSize;
 
     float stepLen;
 
@@ -468,6 +475,7 @@ void VisualisationEngine::raycast(
             }
 
             if (sdf_v < 0.0f) {
+                if (sdf_v < -1.0f) std::cout << sdf_v << std::endl;
                 stepLen = sdf_v * stepScale;
                 pt_result += stepLen * rayDirection;
 
@@ -535,8 +543,8 @@ bool computeNormalAndAngle(
 
             diff_x = rayPoints[0] - rayPoints[2];
             diff_y = rayPoints[1] - rayPoints[3];
-            if (rayPoints[0](3) < 0.0f || rayPoints[1](3) < 0.0f || rayPoints[2](3) < 0.0f ||
-                rayPoints[3](3) < 0.0f)
+            if (rayPoints[0](3) <= 0.0f || rayPoints[1](3) <= 0.0f || rayPoints[2](3) <= 0.0f ||
+                rayPoints[3](3) <= 0.0f)
                 return false;
         }
     }
@@ -579,7 +587,7 @@ void VisualisationEngine::produceNeedICP(
             int id = x + offset;
             if (found) {
                 point[id] = rayPoint[id] * voxelSize;
-                point[id](3) = 0.0f;
+                point[id](3) = 1.0f;
                 normal[id] =
                     cv::Vec4f{output_normmal(0), output_normmal(1), output_normmal(2), 0.0f};
             } else {

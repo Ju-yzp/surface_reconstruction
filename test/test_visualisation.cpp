@@ -3,8 +3,8 @@
 #include <memory>
 
 // opencv
+#include <opencv2/core/mat.hpp>
 #include <opencv2/opencv.hpp>
-#include "VisualisationEngine/RenderState.h"
 
 // tracker
 #include <Tracker/cameraParams.h>
@@ -16,16 +16,13 @@
 #include <VisualisationEngine/VisualisationEngine.h>
 #include <VisualisationEngine/VoxelBlockHash.h>
 #include <opencv2/core/hal/interface.h>
+#include <rcl/node_options.h>
 
-constexpr float MAX_UINT16_VALUE = static_cast<float>(std::numeric_limits<uint16_t>::max());
-constexpr float SCALE_FACTOR = 1000.0f;
-
-uint16_t float_to_uint16(float float_value, float scale_factor = SCALE_FACTOR) {
-    float scaled_value = float_value * scale_factor;
-    float clamped_value = std::fmax(0.0f, std::fmin(scaled_value, MAX_UINT16_VALUE));
-    float rounded_value = std::round(clamped_value);
-    return static_cast<uint16_t>(rounded_value);
-}
+// ros2
+#include <rclcpp/executors.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp/utilities.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 cv::Mat getDepth(std::string file_path) {
     cv::Mat origin = cv::imread(file_path, cv::IMREAD_UNCHANGED);
@@ -34,24 +31,97 @@ cv::Mat getDepth(std::string file_path) {
     return convert;
 }
 
-cv::Mat convertDepth(cv::Mat pointMap) {
+class VisualVoxel : public rclcpp::Node {
+public:
+    VisualVoxel() : Node("Test") {
+        marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "voxel_blocks_markers", 10);
+        RCLCPP_INFO(
+            this->get_logger(),
+            "VisualVoxel node initialized. Publishing to /voxel_blocks_markers.");
+    }
+
+    void publish(std::shared_ptr<Scene> scene) {
+        visualization_msgs::msg::MarkerArray marker_array;
+        visualization_msgs::msg::Marker marker;
+
+        marker.header.frame_id = "map";
+        marker.header.stamp = rclcpp::Clock().now();
+        marker.ns = "visible_voxels";
+
+        marker.type = visualization_msgs::msg::Marker::CUBE_LIST;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+        marker.id = 0;
+
+        marker.pose.orientation.w = 1.0;
+
+        float voxelSize = scene->get_sceneParams().voxelSize;
+
+        marker.scale.x = voxelSize;
+        marker.scale.y = voxelSize;
+        marker.scale.z = voxelSize;
+
+        marker.color.a = 0.4;
+        marker.color.r = 1.0;
+        marker.color.g = 0.0;
+        marker.color.b = 0.0;
+
+        std::set<int> currentVisibleVoxelBlock = scene->get_currentFrameVisibleVoxelBlockList();
+        for (std::set<int>::iterator it = currentVisibleVoxelBlock.begin();
+             it != currentVisibleVoxelBlock.end(); ++it) {
+            HashEntry& entry = scene->get_entry(*it);
+            Voxel* localVoxelBlock = scene->get_voxelBolck(entry.ptr);
+            geometry_msgs::msg::Point center;
+            Eigen::Vector3i globalPos = entry.pos * SDF_BLOCK_SIZE;
+            for (int z = 0; z < SDF_BLOCK_SIZE; ++z)
+                for (int y = 0; y < SDF_BLOCK_SIZE; ++y)
+                    for (int x = 0; x < SDF_BLOCK_SIZE; ++x) {
+                        int localId = x + y * SDF_BLOCK_SIZE + z * SDF_BLOCK_SIZE * SDF_BLOCK_SIZE;
+
+                        Voxel* localVoxel = &localVoxelBlock[localId];
+                        if (localVoxel->sdf < 0.7 && localVoxel->sdf > -0.7f) {
+                            // 计算世界坐标系下的位置，需要从体素块的表达方式进行计算,转换至笛卡尔坐标系
+                            Eigen::Vector4f point_in_world;
+                            center.x = (globalPos(0) + x) * voxelSize + voxelSize / 2.0f;
+                            center.y = (globalPos(1) + y) * voxelSize + voxelSize / 2.0f;
+                            center.z = (globalPos(2) + z) * voxelSize + voxelSize / 2.0f;
+
+                            marker.points.push_back(center);
+                        }
+                    }
+        }
+
+        marker_array.markers.push_back(marker);
+        marker_pub_->publish(marker_array);
+    }
+
+private:
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+};
+
+cv::Mat convertDepth(cv::Mat pointMap, Eigen::Matrix4f m, cv::Mat po) {
     cv::Mat depth;
-    depth.create(pointMap.rows, pointMap.cols, CV_16U);
+    depth.create(pointMap.rows, pointMap.cols, CV_32FC1);
+
+    float error{0.0f};
     for (int y{0}; y < pointMap.rows; ++y) {
         for (int x{0}; x < pointMap.cols; ++x) {
-
-            if(pointMap.at<cv::Vec4f>(y, x)(3) >= 0.0f){
-              depth.at<uint16_t>(y, x) = float_to_uint16(pointMap.at<cv::Vec4f>(y, x)(2) * 5000.0f);
-              std::cout<<pointMap.at<cv::Vec4f>(y, x)(2)<<std::endl;
-            }
-            else
-              depth.at<uint16_t>(y, x) = 0;
+            if (pointMap.at<cv::Vec4f>(y, x)(3) >= 0.0f) {
+                cv::Vec4f p = pointMap.at<cv::Vec4f>(y, x);
+                Eigen::Vector4f point(p(0), p(1), p(2), 1.0f);
+                point = m * point;
+                error += std::abs(po.at<float>(y, x) - point(2));
+                depth.at<float>(y, x) = point(2);
+            } else
+                depth.at<float>(y, x) = 0;
         }
     }
+
+    std::cout << error << std::endl;
     return depth;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     // 相机参数
     Intrinsic depth(525.0f, 525.0f, 319.5f, 239.5f);
     RGBDCalibrationParams calibrationParams(depth, depth, Eigen::Matrix4f(), 0.3f, 4.0f, 5000.0f);
@@ -61,48 +131,44 @@ int main() {
     std::shared_ptr<View> view = std::make_shared<View>(calibrationParams);
     view->depth = getDepth(file1_path);
 
-    SceneParams sceneParams{0.02f, 100.0f, 0.05f};
+    SceneParams sceneParams{0.02f, 100.0f, 0.01f};
 
     std::shared_ptr<TrackingState> ts =
         std::make_shared<TrackingState>(cv::Size2i(view->depth.cols, view->depth.rows));
     std::shared_ptr<RenderState> rs =
         std::make_shared<RenderState>(cv::Size2i(view->depth.cols, view->depth.rows));
     {
+        // 相机坐标系转世界坐标系
         Eigen::Vector3f translation(1.3352f, 0.6261f, 1.6519f);
         Eigen::Quaternionf rotation_q(-0.3231f, 0.6564f, 0.6139f, -0.2963f);
         rotation_q.normalize();
         Eigen::Matrix4f T = Eigen::Matrix4f::Identity();
         T.block<3, 3>(0, 0) = rotation_q.toRotationMatrix();
         T.block<3, 1>(0, 3) = translation;
-        ts->pose_d = T;
+        ts->pose_d = T.inverse();
     }
 
     std::shared_ptr<Scene> scene = std::make_shared<Scene>(sceneParams);
-    scene->reserveVisibleVoxelBlockList(view->depth.rows * view->depth.cols);
+    // scene->reserveVisibleVoxelBlockList(view->depth.rows * view->depth.cols);
 
     //可视化引擎
     VisualisationEngine ve;
     ve.processFrame(scene, view, ts);
-    scene->swapVisibleList();
-    ve.prepare(scene, view, ts, rs);
+    rclcpp::init(argc, argv);
+    auto visual_node = std::make_shared<VisualVoxel>();
+    visual_node->publish(scene);
+    rclcpp::spin(visual_node);
+    rclcpp::shutdown();
+    return 0;
+    //     scene->swapVisibleList();
+    // ve.prepare(scene, view, ts, rs);
 
-    cv::Mat p = convertDepth(ts->pointsMap);
-    cv::namedWindow("Subsample", cv::WINDOW_AUTOSIZE);
+    // cv::Mat p = convertDepth(ts->pointsMap, ts->pose_d,view->depth);
+    // cv::namedWindow("Subsample", cv::WINDOW_AUTOSIZE);
+    // cv::namedWindow("ubsample", cv::WINDOW_AUTOSIZE);
 
-    cv::imshow("Subsample", p);
-    ;
-    cv::waitKey();
+    // cv::imshow("Subsample", p);
+    // cv::imshow("ubsample", view->depth);
 
-    // {
-    //     Eigen::Vector3f translation(1.3434, 0.6271, 1.6606);
-    //     Eigen::Quaternionf rotation_q(-0.3266, 0.6583, 0.6112, -0.2938);
-    //     rotation_q.normalize();
-    //     Eigen::Matrix4f T = Eigen::Matrix4f::Identity();
-    //     T.block<3, 3>(0, 0) = rotation_q.toRotationMatrix();
-    //     T.block<3, 1>(0, 3) = translation;
-    //     ts->pose_d = T;
-    // }
-    // file1_path = "/home/adrewn/surface_restruction/data/1305031102.160407.png";
-    // view->depth = getDepth(file1_path);
-    // ve.processFrame(scene, view, ts);
+    // cv::waitKey();
 }
